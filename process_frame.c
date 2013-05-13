@@ -12,6 +12,9 @@
 #include <string.h>
 #include <stdlib.h>
 
+#define OWN_ALG 1
+#define OSC_ALG !OWN_ALG
+
 OSC_ERR OscVisDrawBoundingBoxBW(struct OSC_PICTURE *picIn, struct OSC_VIS_REGIONS *regions, uint8 Color);
 
 void ProcessFrame(uint8 *pInputImg)
@@ -20,13 +23,77 @@ void ProcessFrame(uint8 *pInputImg)
 	int nc = OSC_CAM_MAX_IMAGE_WIDTH/2;
 	int siz = sizeof(data.u8TempImage[GRAYSCALE]);
 
+#if OSC_ALG
 	int Shift = 7;
 	short Beta = 2;//the meaning is that in floating point the value of Beta is = 6/(1 << Shift) = 6/128 = 0.0469
 	uint8 MaxForeground = 120;//the maximum foreground counter value (at 15 fps this corresponds to less than 10s)
 
 	struct OSC_PICTURE Pic1, Pic2;//we require these structures to use Oscar functions
 	struct OSC_VIS_REGIONS ImgRegions;//these contain the foreground objects
+#endif
+#if OWN_ALG
+	struct OSC_PICTURE Pic1, Pic2;
+	struct OSC_VIS_REGIONS ImgRegions;
+	uint8 threshold = data.ipc.state.nThreshold*255/100;
+#endif
 
+#if OWN_ALG
+	for(r = 0; r < siz; r += nc)
+	{
+		for(c = 0; c < nc; c++)
+		{
+			data.u8TempImage[THRESHOLD][r+c] = (data.u8TempImage[GRAYSCALE][r+c] < threshold ? 255 : 0);
+		}
+	}
+
+	for(r = nc; r < siz-nc; r+= nc)/* we skip the first and last line */
+	{
+		for(c = 1; c < nc-1; c++)/* we skip the first and last column */
+		{
+			unsigned char* p = &data.u8TempImage[THRESHOLD][r+c];
+			data.u8TempImage[EROSION][r+c] = *(p-nc-1) & *(p-nc) & *(p-nc+1) &
+											 *(p-1)    & *p      & *(p+1)    &
+											 *(p+nc-1) & *(p+nc) & *(p+nc+1);
+		}
+	}
+
+	for(r = nc; r < siz-nc; r+= nc)/* we skip the first and last line */
+	{
+		for(c = 1; c < nc-1; c++)/* we skip the first and last column */
+		{
+			unsigned char* p = &data.u8TempImage[EROSION][r+c];
+			data.u8TempImage[DILATION][r+c] = *(p-nc-1) | *(p-nc) | *(p-nc+1) |
+											  *(p-1)    | *p      | *(p+1)    |
+											  *(p+nc-1) | *(p+nc) | *(p+nc+1);
+		}
+	}
+
+	//wrap image DILATION in picture struct
+	Pic1.data = data.u8TempImage[DILATION];
+	Pic1.width = nc;
+	Pic1.height = OSC_CAM_MAX_IMAGE_HEIGHT/2;
+	Pic1.type = OSC_PICTURE_GREYSCALE;
+	//as well as EROSION (will be used as output)
+	Pic2.data = data.u8TempImage[EROSION];
+	Pic2.width = nc;
+	Pic2.height = OSC_CAM_MAX_IMAGE_HEIGHT/2;
+	Pic2.type = OSC_PICTURE_BINARY;//probably has no consequences
+	//have to convert to OSC_PICTURE_BINARY which has values 0x01 (and not 0xff)
+	OscVisGrey2BW(&Pic1, &Pic2, 0x80, false);
+
+	//now do region labeling and feature extraction
+	OscVisLabelBinary( &Pic2, &ImgRegions);
+	OscVisGetRegionProperties( &ImgRegions);
+
+	Pic2.data = data.u8TempImage[GRAYSCALE];
+	OscVisDrawBoundingBoxBW(&Pic2, &ImgRegions, 255);
+	OscVisDrawBoundingBoxBW( &Pic1, &ImgRegions, 128);
+
+
+
+#endif
+
+#if OSC_ALG
 	if(data.ipc.state.nStepCounter == 1)
 	{
 		/* this is the first time we call this function */
@@ -132,9 +199,10 @@ void ProcessFrame(uint8 *pInputImg)
 		OscVisDrawBoundingBoxBW( &Pic2, &ImgRegions, 255);
 		OscVisDrawBoundingBoxBW( &Pic1, &ImgRegions, 128);
 	}
+#endif
 }
 
-
+#if TRUE
 /* Drawing Function for Bounding Boxes; own implementation because Oscar only allows colored boxes; here in Gray value "Color"  */
 /* should only be used for debugging purposes because we should not drawn into a gray scale image */
 OSC_ERR OscVisDrawBoundingBoxBW(struct OSC_PICTURE *picIn, struct OSC_VIS_REGIONS *regions, uint8 Color)
@@ -160,5 +228,5 @@ OSC_ERR OscVisDrawBoundingBoxBW(struct OSC_PICTURE *picIn, struct OSC_VIS_REGION
 	 }
 	 return SUCCESS;
 }
-
+#endif
 
